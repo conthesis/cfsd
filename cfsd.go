@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 	"errors"
+	"bytes"
 )
 
 const getFileTopic = "conthesis.cfs.get"
@@ -55,14 +56,9 @@ func (c *cfsd) getFile(m *nats.Msg) {
 
 	switch e := ent.(type) {
 	case *MTabSymlinks:
-		sym_ent, ok_link := c.mtab.MatchValueOnly(e.LinkPath).(*MTabSink);
-		if !ok_link {
-			log.Printf("Symlink sink entry not found path=%v dest=%v", path, e.LinkPath)
-			return
-		}
-		dst_ent, ok_dest := c.mtab.MatchValueOnly(e.DestPath).(*MTabSink);
-		if !ok_dest {
-			log.Printf("Destination sink entry not found path=%v dest=%v", path, e.DestPath)
+		sym_ent, dst_ent, err := c.mtab.ExtractFromSym(e)
+		if err != nil {
+			log.Printf("Failed to extract targets for symlink: %v", err)
 			return
 		}
 		linked_path, err := performOperation(ctx, c.nc, sym_ent, "get", []byte(path_prefix))
@@ -73,7 +69,7 @@ func (c *cfsd) getFile(m *nats.Msg) {
 		err = delegateToUpstream(c.nc, dst_ent, "get", []byte(linked_path), m.Reply)
 		if err != nil {
 			log.Printf("Unable to delegate to upstream: %v", err)
-			return
+ 			return
 		}
 	case *MTabSink:
 		err := delegateToUpstream(c.nc, e, "get", []byte(path_prefix), m.Reply)
@@ -82,6 +78,63 @@ func (c *cfsd) getFile(m *nats.Msg) {
 			return
 		}
 	}
+}
+
+
+func (c *cfsd) putFile(m *nats.Msg) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	parts := bytes.SplitN(m.Data, []byte("\n"), 2)
+	if len(parts) != 2 {
+		log.Printf("Message format incorrect")
+		m.Respond([]byte(""))
+	}
+	path := string(parts[0])
+	data := parts[1]
+
+	log.Printf("hello there! %v", m.Data)
+
+	path_prefix, ent := c.mtab.Match(path)
+
+	if ent == nil {
+		log.Printf("No such filesystem matching path=%v", path)
+		m.Respond([]byte("ERR"))
+	}
+	switch e := ent.(type) {
+	case *MTabSymlinks:
+		sym_ent, dst_ent, err := c.mtab.ExtractFromSym(e)
+		if err != nil {
+			log.Printf("Failed to extract targets for symlink: %v", err)
+			return
+		}
+
+		linked_path, err := performOperation(ctx, c.nc, dst_ent, "post", data)
+		if err != nil {
+			log.Printf("Failed operation path=%v: %v", path, err)
+			return
+		}
+		payload := makePutPayload(path_prefix, &linked_path)
+		err = delegateToUpstream(c.nc, sym_ent, "put", payload, m.Reply)
+		if err != nil {
+			log.Printf("Unable to delegate to upstream: %v", err)
+ 			return
+		}
+	case *MTabSink:
+		payload := makePutPayload(path_prefix, &data)
+		err := delegateToUpstream(c.nc, e, "put", payload, m.Reply)
+		if err != nil {
+			log.Printf("Unable to delegate to upstream: %v", err)
+			return
+		}
+	}
+}
+
+func makePutPayload(path string, data *[]byte) []byte {
+	buf := bytes.NewBufferString(path)
+	buf.Grow(len(*data) + 1)
+	buf.WriteRune('\n')
+	buf.Write(*data)
+	return buf.Bytes()
 }
 
 
@@ -123,10 +176,14 @@ func waitForTerm() {
 }
 
 func (c *cfsd) setupSubscriptions() {
-	_, err := c.nc.Subscribe(getFileTopic, c.getFile)
-	if err != nil {
+	if _, err := c.nc.Subscribe(getFileTopic, c.getFile); err != nil {
 		log.Fatalf("Unable to subscribe to topic %s: %s", getFileTopic, err)
 	}
+
+	if _, err := c.nc.Subscribe(putFileTopic, c.putFile); err != nil {
+		log.Fatalf("Unable to subscribe to topic %s: %s", putFileTopic, err)
+	}
+
 }
 
 func (c *cfsd) Close() {

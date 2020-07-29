@@ -5,7 +5,11 @@ import (
 	"os"
 	"strings"
 	"gopkg.in/yaml.v2"
+	"errors"
+	"fmt"
 )
+
+var InvalidSymlinkError = errors.New("emit macho dwarf: elf header corrupted")
 
 type MTabSink struct {
 	TopicMap map[string]string
@@ -97,4 +101,18 @@ func (mt *MTab) Match(path string) (string, interface{}) {
 func (mt *MTab) MatchValueOnly(path string) interface{} {
 	_, v := mt.Match(path)
 	return v
+}
+
+func (mt *MTab) ExtractFromSym(e *MTabSymlinks) (*MTabSink, *MTabSink, error) {
+	sym_ent, ok_link := mt.MatchValueOnly(e.LinkPath).(*MTabSink);
+	if !ok_link {
+		err := fmt.Errorf("%w entry not found %v", InvalidSymlinkError, e.LinkPath)
+		return nil, nil, err
+	}
+	dst_ent, ok_dest := mt.MatchValueOnly(e.DestPath).(*MTabSink);
+	if !ok_dest {
+		err := fmt.Errorf("%w Destination sink entry not found %v", InvalidSymlinkError, e.DestPath)
+		return nil, nil, err
+	}
+	return sym_ent, dst_ent, nil
 }

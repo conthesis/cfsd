@@ -8,6 +8,8 @@ sinks:
   /cas:
     topicmap:
       get: "conthesis.cas.get"
+      post: "conthesis.cas.store"
   /raw-vsn:
     topicmap:
       get: "conthesis.dcollect.get"
+      put: "conthesis.dcollect.store"
