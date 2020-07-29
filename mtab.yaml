@@ -1,0 +1,13 @@
+---
+symlinks:
+  /entity:
+    linkpath: /raw-vsn
+    destpath: /cas
+
+sinks:
+  /cas:
+    topicmap:
+      get: "conthesis.cas.get"
+  /raw-vsn:
+    topicmap:
+      get: "conthesis.dcollect.get"
