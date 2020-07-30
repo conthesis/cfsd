@@ -91,6 +91,7 @@ func (c *cfsd) putFile(m *nats.Msg) {
 		log.Printf("Bad input format: %v", err)
 		return
 	}
+	path = path[:len(path) - 1] // Cut out the delimiter
 	data := buf.Next(len(m.Data)) // Guaranteed to be the rest...
 
 	path_prefix, ent := c.mtab.Match(path)
@@ -144,7 +145,7 @@ func delegateToUpstream(nc *nats.Conn, sink *MTabSink, operation string, argumen
 		log.Printf("Topic for operation %v was not set", operation)
 		return nc.Publish(reply, []byte(""))
 	}
-	log.Printf("topic=%v argument=%v", topic, string(argument))
+	log.Printf("Delegating to topic=%v", topic)
 	return nc.PublishRequest(topic, reply, argument)
 }
 
