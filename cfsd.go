@@ -84,15 +84,14 @@ func (c *cfsd) getFile(m *nats.Msg) {
 func (c *cfsd) putFile(m *nats.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	parts := bytes.SplitN(m.Data, []byte("\n"), 2)
-	if len(parts) != 2 {
-		log.Printf("Message format incorrect")
-		m.Respond([]byte(""))
-	}
-	path := string(parts[0])
-	data := parts[1]
 
-	log.Printf("hello there! %v", m.Data)
+	buf := bytes.NewBuffer(m.Data)
+	path, err := buf.ReadString('\n')
+	if err != nil {
+		log.Printf("Bad input format: %v", err)
+		return
+	}
+	data := buf.Next(len(m.Data)) // Guaranteed to be the rest...
 
 	path_prefix, ent := c.mtab.Match(path)
 
