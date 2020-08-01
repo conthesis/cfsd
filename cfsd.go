@@ -15,6 +15,7 @@ import (
 
 const getFileTopic = "conthesis.cfs.get"
 const putFileTopic = "conthesis.cfs.put"
+const readLinkTopic = "conthesis.cfs.readlink"
 
 func getRequiredEnv(env string) string {
 	val := os.Getenv(env)
@@ -137,6 +138,46 @@ func makePutPayload(path string, data *[]byte) []byte {
 	return buf.Bytes()
 }
 
+func (c *cfsd) readLink(m *nats.Msg) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	path := string(m.Data)
+	path_prefix, ent := c.mtab.Match(path)
+
+	if ent == nil {
+		log.Printf("No such filesystem matching path=%v", path)
+		m.Respond([]byte(""))
+	}
+	switch e := ent.(type) {
+	case *MTabSymlinks:
+		sym_ent, _, err := c.mtab.ExtractFromSym(e)
+		if err != nil {
+			log.Printf("Failed to extract targets for symlink: %v", err)
+			return
+		}
+		linked_path, err := performOperation(ctx, c.nc, sym_ent, "get", []byte(path_prefix))
+		if err != nil {
+			log.Printf("Failed operation path=%v: %v", path, err)
+			return
+		}
+
+		var b bytes.Buffer
+		b.Grow(len(e.DestPath) + 1 + len(linked_path))
+		b.WriteString(e.DestPath)
+		b.WriteRune('/')
+		b.Write(linked_path)
+
+		if err := m.Respond(b.Bytes()); err != nil {
+			log.Printf("Failed to respond to message")
+		}
+
+	case *MTabSink:
+		m.Respond(m.Data)
+	}
+
+}
+
 
 
 func delegateToUpstream(nc *nats.Conn, sink *MTabSink, operation string, argument []byte, reply string) error {
@@ -181,6 +222,10 @@ func (c *cfsd) setupSubscriptions() {
 	}
 
 	if _, err := c.nc.Subscribe(putFileTopic, c.putFile); err != nil {
+		log.Fatalf("Unable to subscribe to topic %s: %s", putFileTopic, err)
+	}
+
+	if _, err := c.nc.Subscribe(readLinkTopic, c.readLink); err != nil {
 		log.Fatalf("Unable to subscribe to topic %s: %s", putFileTopic, err)
 	}
 
