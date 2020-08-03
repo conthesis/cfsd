@@ -6,36 +6,46 @@ import (
 	"log"
 	url "net/url"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 	"errors"
 	"bytes"
+	"go.uber.org/fx"
+	"fmt"
 )
 
 const getFileTopic = "conthesis.cfs.get"
 const putFileTopic = "conthesis.cfs.put"
 const readLinkTopic = "conthesis.cfs.readlink"
 
-func getRequiredEnv(env string) string {
+func getRequiredEnv(env string) (string, error) {
 	val := os.Getenv(env)
 	if val == "" {
-		log.Fatalf("`%s`, a required environment variable was not set", env)
+		return "", fmt.Errorf("`%s`, a required environment variable was not set", env)
 	}
-	return val
+	return val, nil
 }
 
-func connectNats() *nats.Conn {
-	natsURL := getRequiredEnv("NATS_URL")
+func NewNats(lc fx.Lifecycle) (*nats.Conn, error) {
+	natsURL, err := getRequiredEnv("NATS_URL")
+	if err != nil {
+		return nil, err
+	}
 	nc, err := nats.Connect(natsURL)
 
 	if err != nil {
 		if err, ok := err.(*url.Error); ok {
-			log.Fatalf("NATS_URL is of an incorrect format: %s", err.Error())
+			return nil, fmt.Errorf("NATS_URL is of an incorrect format: %w", err)
 		}
-		log.Fatalf("Failed to connect to NATS %T: %s", err, err)
+		return nil, err
 	}
-	return nc
+
+	lc.Append(fx.Hook{
+		OnStop: func(ctx context.Context) error {
+			return nc.Drain()
+		},
+	})
+
+	return nc, nil
 }
 
 type cfsd struct {
@@ -205,47 +215,33 @@ func performOperation(ctx context.Context, nc *nats.Conn, sink *MTabSink, operat
 }
 
 
-func waitForTerm() {
-	sigs := make(chan os.Signal, 1)
-	done := make(chan bool, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigs
-		done <- true
-	}()
-	<-done
-}
 
-func (c *cfsd) setupSubscriptions() {
+func setupSubscriptions(c *cfsd) error {
 	if _, err := c.nc.Subscribe(getFileTopic, c.getFile); err != nil {
-		log.Fatalf("Unable to subscribe to topic %s: %s", getFileTopic, err)
+		return err
 	}
 
 	if _, err := c.nc.Subscribe(putFileTopic, c.putFile); err != nil {
-		log.Fatalf("Unable to subscribe to topic %s: %s", putFileTopic, err)
+		return err
 	}
 
 	if _, err := c.nc.Subscribe(readLinkTopic, c.readLink); err != nil {
-		log.Fatalf("Unable to subscribe to topic %s: %s", putFileTopic, err)
+		return err
 	}
-
+	return nil
 }
 
-func (c *cfsd) Close() {
-	log.Printf("Shutting down...")
-	c.nc.Drain()
+func NewCFSD(nc *nats.Conn, mtab *MTab) *cfsd {
+	return &cfsd{nc: nc, mtab: mtab}
 }
 
 func main() {
-	nc := connectNats()
-	mtab := NewMTab()
-	err := mtab.LoadDefaultMTab()
-	if err != nil {
-		log.Fatalf("Unable to load mtab %v", err)
-	}
-	cfsd := cfsd{nc: nc, mtab: mtab}
-	defer cfsd.Close()
-	cfsd.setupSubscriptions()
-	log.Printf("Connected to NATS")
-	waitForTerm()
+	fx.New(
+		fx.Provide(
+			NewNats,
+			NewMTab,
+			NewCFSD,
+		),
+		fx.Invoke(setupSubscriptions),
+	).Run()
 }

@@ -83,10 +83,15 @@ func (mt *MTab) LoadDefaultMTab() error {
 	return nil
 }
 
-func NewMTab() *MTab {
-	return &MTab{
+func NewMTab() (*MTab, error) {
+	mt :=  &MTab{
 		trie: trie.NewPathTrie(),
 	}
+	err := mt.LoadDefaultMTab()
+	if err != nil {
+		return nil, err
+	}
+	return mt, nil
 }
 
 func (mt *MTab) Match(path string) (string, interface{}) {
