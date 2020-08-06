@@ -1,0 +1,25 @@
+name: build
+on:
+  # Trigger the workflow on push or pull request,
+  # but only for the master branch
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    - name: Dockerbuild
+      uses: docker/build-push-action@v1.1.0
+      with:
+        add_git_labels: true
+        tag_with_ref: true
+        tag_with_sha: true
+        registry: docker.pkg.github.com
+        repository: ${{github.repository}}/${{ github.event.repository.name }}
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
