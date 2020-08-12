@@ -100,6 +100,7 @@ func (c *cfsd) putFile(m *nats.Msg) {
 	path, err := buf.ReadString('\n')
 	if err != nil {
 		log.Printf("Bad input format: %v", err)
+		m.Respond([]byte("ERR"))
 		return
 	}
 	path = path[:len(path) - 1] // Cut out the delimiter
@@ -116,18 +117,21 @@ func (c *cfsd) putFile(m *nats.Msg) {
 		sym_ent, dst_ent, err := c.mtab.ExtractFromSym(e)
 		if err != nil {
 			log.Printf("Failed to extract targets for symlink: %v", err)
+			m.Respond([]byte("ERR"))
 			return
 		}
 
 		linked_path, err := performOperation(ctx, c.nc, dst_ent, "post", data)
 		if err != nil {
 			log.Printf("Failed operation path=%v: %v", path, err)
+			m.Respond([]byte("ERR"))
 			return
 		}
 		payload := makePutPayload(path_prefix, &linked_path)
 		err = delegateToUpstream(c.nc, sym_ent, "put", payload, m.Reply)
 		if err != nil {
 			log.Printf("Unable to delegate to upstream: %v", err)
+			m.Respond([]byte("ERR"))
  			return
 		}
 	case *MTabSink:
@@ -135,6 +139,7 @@ func (c *cfsd) putFile(m *nats.Msg) {
 		err := delegateToUpstream(c.nc, e, "put", payload, m.Reply)
 		if err != nil {
 			log.Printf("Unable to delegate to upstream: %v", err)
+			m.Respond([]byte("ERR"))
 			return
 		}
 	}
