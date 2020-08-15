@@ -121,3 +121,14 @@ func (mt *MTab) ExtractFromSym(e *MTabSymlinks) (*MTabSink, *MTabSink, error) {
 	}
 	return sym_ent, dst_ent, nil
 }
+
+func (mt *MTab) FilesystemsMatching(prefix string) []string {
+	ents := make([]string, 0)
+	mt.trie.Walk(func(key string, _ interface{}) error {
+		if strings.HasPrefix(key, prefix) {
+			ents = append(ents, key[1:])
+		}
+		return nil
+	})
+	return ents
+}

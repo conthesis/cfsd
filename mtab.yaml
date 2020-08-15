@@ -13,3 +13,4 @@ sinks:
     topicmap:
       get: "conthesis.dcollect.get"
       put: "conthesis.dcollect.store"
+      list: "conthesis.dcollect.list"

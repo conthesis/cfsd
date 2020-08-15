@@ -1,21 +1,26 @@
 package main
 
 import (
-	"context"
-	"github.com/nats-io/nats.go"
-	"log"
-	url "net/url"
-	"os"
-	"time"
-	"errors"
 	"bytes"
-	"go.uber.org/fx"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/nats-io/nats.go"
+	"go.uber.org/fx"
 )
 
-const getFileTopic = "conthesis.cfs.get"
-const putFileTopic = "conthesis.cfs.put"
-const readLinkTopic = "conthesis.cfs.readlink"
+const baseTopic = "conthesis.cfs."
+const getFileTopic = baseTopic + "get"
+const putFileTopic = baseTopic + "put"
+const readLinkTopic = baseTopic + "readlink"
+const listTopic = baseTopic + "list"
 
 func getRequiredEnv(env string) (string, error) {
 	val := os.Getenv(env)
@@ -163,6 +168,7 @@ func (c *cfsd) readLink(m *nats.Msg) {
 	if ent == nil {
 		log.Printf("No such filesystem matching path=%v", path)
 		m.Respond([]byte(""))
+		return
 	}
 	switch e := ent.(type) {
 	case *MTabSymlinks:
@@ -193,6 +199,108 @@ func (c *cfsd) readLink(m *nats.Msg) {
 
 }
 
+type ListFilesRequest struct {
+	Prefix string `json:"prefix"`
+}
+
+type ListFilesResponse struct {
+	Success bool `json:"success"`
+	Status string `json:"status,omitempty"`
+	Contents []string `json:"contents"`
+}
+
+func (lfr ListFilesResponse) addPrefixToContents(prefix string) {
+	for i := range lfr.Contents {
+		lfr.Contents[i] = prefix + lfr.Contents[i]
+	}
+}
+
+var InternalErrorResp ListFilesResponse = ListFilesResponse{Success: false, Status: "INTERNAL_ERROR"}
+
+func listFilesRespond(m *nats.Msg, response ListFilesResponse) error {
+	resp, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	if err := m.Respond(resp); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *cfsd) listFiles(m *nats.Msg) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	req := ListFilesRequest{}
+	if err := json.Unmarshal(m.Data, &req); err != nil {
+		log.Printf("List request had bad format %v", err)
+		resp := ListFilesResponse{Success: false, Status: "BAD_FORMAT"}
+		if err := listFilesRespond(m, resp); err != nil {
+			log.Printf("Unable to send error %v", err)
+		}
+		return
+	}
+
+	pathPrefix, entry := c.mtab.Match(req.Prefix)
+
+	if entry == nil {
+		resp := ListFilesResponse{Success: true, Contents: c.mtab.FilesystemsMatching(req.Prefix)}
+		if err := listFilesRespond(m, resp); err != nil {
+			log.Printf("Unable to send file systems")
+		}
+		return
+	}
+
+	var sinkForListing *MTabSink = nil
+	switch e := entry.(type) {
+	case *MTabSink:
+		sinkForListing = e
+	case *MTabSymlinks:
+		symEnt, _, err := c.mtab.ExtractFromSym(e)
+		if err != nil {
+			log.Printf("No filesystem matching symlinked fs %v", e)
+		}
+		sinkForListing = symEnt
+	}
+
+	if sinkForListing == nil {
+		log.Printf("Filesystem match was of an unsupported type %v", entry)
+		if err := listFilesRespond(m, InternalErrorResp); err != nil {
+			log.Printf("Unable to send INTERNAL_ERROR")
+		}
+		return
+	}
+
+	if sinkForListing.topicFor("list") == "" {
+		resp := ListFilesResponse{Success: true, Status: "NOT_LISTABLE"}
+		if err := listFilesRespond(m, resp); err != nil {
+			log.Printf("Unable to send empty list of files %v", err)
+		}
+	}
+
+	result, err := performOperation(ctx, c.nc, sinkForListing, "list", []byte(pathPrefix))
+	if err != nil {
+		log.Printf("Error requesting from upstream %v", err)
+		if err := listFilesRespond(m, InternalErrorResp); err != nil {
+			log.Printf("Unable to send internal error %v", err)
+		}
+	}
+	listResponse := ListFilesResponse{}
+	if err := json.Unmarshal(result, &listResponse); err != nil {
+		log.Printf("Unable to read upstream response: %v", err)
+		if err := listFilesRespond(m, InternalErrorResp); err != nil {
+			log.Printf("Unable to send internal error %v", err)
+		}
+	}
+
+	// The original request minus what was sent to the upstream is the stripped away prefix.
+	prefix := strings.TrimSuffix(req.Prefix, pathPrefix)
+	listResponse.addPrefixToContents(prefix + "/")
+	if err := listFilesRespond(m, listResponse); err != nil {
+		log.Printf("Unable to send respone %v", err)
+	}
+}
+
 
 
 func delegateToUpstream(nc *nats.Conn, sink *MTabSink, operation string, argument []byte, reply string) error {
@@ -201,7 +309,7 @@ func delegateToUpstream(nc *nats.Conn, sink *MTabSink, operation string, argumen
 		log.Printf("Topic for operation %v was not set", operation)
 		return nc.Publish(reply, []byte(""))
 	}
-	log.Printf("Delegating to topic=%v", topic)
+	log.Printf("Delegating to %v", topic)
 	return nc.PublishRequest(topic, reply, argument)
 }
 
@@ -222,16 +330,16 @@ func performOperation(ctx context.Context, nc *nats.Conn, sink *MTabSink, operat
 
 
 func setupSubscriptions(c *cfsd) error {
-	if _, err := c.nc.Subscribe(getFileTopic, c.getFile); err != nil {
-		return err
+	subs := map[string]nats.MsgHandler{
+		getFileTopic: c.getFile,
+		putFileTopic: c.putFile,
+		readLinkTopic: c.readLink,
+		listTopic: c.listFiles,
 	}
-
-	if _, err := c.nc.Subscribe(putFileTopic, c.putFile); err != nil {
-		return err
-	}
-
-	if _, err := c.nc.Subscribe(readLinkTopic, c.readLink); err != nil {
-		return err
+	for subj, fn := range subs {
+		if _, err := c.nc.Subscribe(subj, fn); err != nil {
+			return err
+		}
 	}
 	return nil
 }
