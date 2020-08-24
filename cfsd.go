@@ -22,6 +22,7 @@ const putFileTopic = baseTopic + "put"
 const readLinkTopic = baseTopic + "readlink"
 const listTopic = baseTopic + "list"
 
+
 func getRequiredEnv(env string) (string, error) {
 	val := os.Getenv(env)
 	if val == "" {
@@ -203,15 +204,27 @@ type ListFilesRequest struct {
 	Prefix string `json:"prefix"`
 }
 
+type EntryType string
+
+const (
+	File EntryType = "File"
+	Directory = "Directory"
+)
+
+type ListFilesEntry struct {
+	Name string `json:"name"`
+	Type EntryType `json:"type"`
+}
+
 type ListFilesResponse struct {
 	Success bool `json:"success"`
 	Status string `json:"status,omitempty"`
-	Contents []string `json:"contents"`
+	Contents []ListFilesEntry `json:"contents"`
 }
 
 func (lfr ListFilesResponse) addPrefixToContents(prefix string) {
 	for i := range lfr.Contents {
-		lfr.Contents[i] = prefix + lfr.Contents[i]
+		lfr.Contents[i].Name = prefix + lfr.Contents[i].Name
 	}
 }
 
@@ -226,6 +239,17 @@ func listFilesRespond(m *nats.Msg, response ListFilesResponse) error {
 		return err
 	}
 	return nil
+}
+
+func namesToEntries(names []string, entryType EntryType) []ListFilesEntry {
+	res := make([]ListFilesEntry, 0, len(names))
+	for _, name := range names {
+		res = append(res, ListFilesEntry{
+			Name: name,
+			Type: entryType,
+		})
+	}
+	return res
 }
 
 func (c *cfsd) listFiles(m *nats.Msg) {
@@ -244,7 +268,7 @@ func (c *cfsd) listFiles(m *nats.Msg) {
 	pathPrefix, entry := c.mtab.Match(req.Prefix)
 
 	if entry == nil {
-		resp := ListFilesResponse{Success: true, Contents: c.mtab.FilesystemsMatching(req.Prefix)}
+		resp := ListFilesResponse{Success: true, Contents: namesToEntries(c.mtab.FilesystemsMatching(req.Prefix), Directory)}
 		if err := listFilesRespond(m, resp); err != nil {
 			log.Printf("Unable to send file systems")
 		}
