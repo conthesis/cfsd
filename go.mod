@@ -9,5 +9,5 @@ require (
 	github.com/nats-io/nats.go v1.10.0
 	go.uber.org/fx v1.13.1
 	google.golang.org/protobuf v1.25.0 // indirect
-	gopkg.in/yaml.v2 v2.3.0
+	gopkg.in/yaml.v2 v2.4.0
 )
